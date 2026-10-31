@@ -1,0 +1,25 @@
+# Martes foina (mMarFoi2.1, GCA_964304585.1)
+#
+# The assembly has 19 chromosome-length scaffolds (2n = 38): 18 autosomes
+# plus the X chromosome, with a separate Y and mitochondrion.
+#
+# The sex chromosomes and the mitochondrion are listed below. The autosome
+# accessions are NOT filled in, because they must match the BAM header
+# exactly and the order of accessions in the assembly cannot be assumed.
+# Generate the complete file from your own BAM:
+#
+#   karyoratio.py --bam marten_sample.bam --make-chrom-file \
+#             --x OZ199613.1 --y OZ199623.1 --mt OZ199624.1 \
+#             --prefix OZ --min-autosome-length 10000000 \
+#             -o mmarfoi2.1_chroms.tsv
+#
+# Then open the result and check it: every chromosome-length scaffold should
+# appear as an autosome, and nothing else should. Sequences that did not meet
+# the criteria are listed at the end as comments, ready to be promoted.
+#
+# --prefix OZ keeps the human contigs out when a composite reference
+# (marten + GRCh38) was used for competitive mapping.
+
+OZ199613.1	X
+OZ199623.1	Y
+OZ199624.1	MT
