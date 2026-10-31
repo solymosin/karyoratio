@@ -286,23 +286,40 @@ def map_reads(r1: Path, r2: Path, index: Path, label: str, aligner: str,
 
 @dataclass
 class Pool:
-    """Every filtered read of one simulated sample, as a sequence index."""
-    indices: np.ndarray
+    """Per-sequence read totals of one sample, and the sequence lengths."""
+    totals: np.ndarray
     names: list[str]
     lengths: dict[str, int]
     total_reads: int
 
 
-def collect_pool(bam_path: Path, names: list[str], min_mapq: int) -> Pool:
-    """
-    Read the BAM once and record, for every passing read, which sequence it
-    mapped to. Subsampling then happens in memory.
-    """
-    name_to_idx = {n: i for i, n in enumerate(names)}
-    lengths: dict[str, int] = {}
-    collected: list[np.ndarray] = []
-    total = 0
+def _count_one(job: tuple[str, str, int]) -> tuple[str, int]:
+    """Count passing reads on one sequence. Module level, so it can be forked."""
+    bam_path, name, min_mapq = job
+    with pysam.AlignmentFile(bam_path, "rb") as bam:
+        n = bam.count(
+            contig=name,
+            read_callback=lambda r: not (
+                r.is_unmapped or r.is_secondary or r.is_supplementary
+                or r.is_qcfail or r.is_duplicate
+                or r.mapping_quality < min_mapq
+            ),
+        )
+    return name, n
 
+
+def collect_pool(bam_path: Path, names: list[str], min_mapq: int,
+                 jobs: int = 1) -> Pool:
+    """
+    Count passing reads per sequence.
+
+    Only the totals are needed: subsampling draws per-sequence counts directly
+    from the multivariate hypergeometric distribution, so the identity of
+    individual reads never matters. Sequences are counted in parallel, which
+    helps because each one is an independent pass over its own region of the
+    index.
+    """
+    lengths: dict[str, int] = {}
     with pysam.AlignmentFile(str(bam_path), "rb") as bam:
         header_lengths = dict(zip(bam.references, bam.lengths))
         for name in names:
@@ -310,29 +327,32 @@ def collect_pool(bam_path: Path, names: list[str], min_mapq: int) -> Pool:
                 sys.exit(f"[error] {name} not in {bam_path} header")
             lengths[name] = header_lengths[name]
 
-        for name in names:
-            idx = name_to_idx[name]
-            n = bam.count(
-                contig=name,
-                read_callback=lambda r: not (
-                    r.is_unmapped or r.is_secondary or r.is_supplementary
-                    or r.is_qcfail or r.is_duplicate
-                    or r.mapping_quality < min_mapq
-                ),
-            )
-            collected.append(np.full(n, idx, dtype=np.int32))
-            total += n
+    work = [(str(bam_path), name, min_mapq) for name in names]
+    if jobs > 1 and len(work) > 1:
+        import multiprocessing as mp
+        with mp.Pool(min(jobs, len(work))) as pool:
+            counted = dict(pool.map(_count_one, work))
+    else:
+        counted = dict(_count_one(job) for job in work)
 
-    return Pool(indices=np.concatenate(collected) if collected
-                else np.empty(0, dtype=np.int32),
-                names=names, lengths=lengths, total_reads=total)
+    totals = np.array([counted[n] for n in names], dtype=np.int64)
+    return Pool(totals=totals, names=names, lengths=lengths,
+                total_reads=int(totals.sum()))
 
 
 def subsample_counts(pool: Pool, n: int, rng: np.random.Generator) -> dict[str, int]:
-    """Draw n reads without replacement and tally them per sequence."""
-    drawn = rng.choice(pool.indices, size=n, replace=False)
-    tally = np.bincount(drawn, minlength=len(pool.names))
-    return {name: int(tally[i]) for i, name in enumerate(pool.names)}
+    """
+    Draw n reads without replacement and tally them per sequence.
+
+    Drawing the reads individually and then tallying would be wasteful, since
+    only the tally is used. Sampling n items without replacement from a
+    population partitioned into groups, and counting how many fall in each
+    group, is the multivariate hypergeometric distribution -- so the counts can
+    be drawn directly. The result is distributed identically and the cost
+    depends on the number of sequences rather than on the number of reads.
+    """
+    drawn = rng.multivariate_hypergeometric(pool.totals, n)
+    return {name: int(drawn[i]) for i, name in enumerate(pool.names)}
 
 
 # --------------------------------------------------------------------------- #
@@ -345,11 +365,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("--reference", required=True, type=Path,
-                   help="indexed reference FASTA (samtools faidx)")
+    p.add_argument("--reference", type=Path, default=None,
+                   help="indexed reference FASTA (samtools faidx); "
+                        "not needed with --from-bam")
     p.add_argument("--chrom-file", required=True, type=Path,
                    help="karyoratio chromosome definition file")
     p.add_argument("--outdir", required=True, type=Path)
+
+    p.add_argument("--from-bam", action="append", default=[], metavar="SEX=PATH",
+                   help="validate on real samples of known sex instead of "
+                        "simulating, e.g. --from-bam male=dog_m.bam "
+                        "--from-bam female=dog_f.bam. Stages 1-3 are skipped; "
+                        "the subsampling and the summary are identical. "
+                        "Repeatable.")
 
     s = p.add_argument_group("simulation")
     s.add_argument("--profile-from", type=Path, default=None,
@@ -364,8 +392,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     a = p.add_argument_group("alignment")
     a.add_argument("--aligner", choices=("bowtie2", "bwa"), default="bowtie2")
-    a.add_argument("--threads", type=int, default=4)
+    a.add_argument("--index", type=Path, default=None,
+                   help="basename of a prebuilt aligner index, skipping the "
+                        "build. Its sequence names must match those in "
+                        "--chrom-file; check with `bowtie2-inspect -n`")
+    a.add_argument("--threads", type=int, default=4,
+                   help="threads for bowtie2/bwa and samtools (default: 4)")
+    a.add_argument("--jobs", type=int, default=0,
+                   help="processes for counting sequences in parallel; "
+                        "0 means use --threads")
     a.add_argument("--min-mapq", type=int, default=30)
+    a.add_argument("--serial-simulation", action="store_true",
+                   help="simulate the two sexes one after the other; by "
+                        "default they run concurrently, since ART is "
+                        "single-threaded")
 
     c = p.add_argument_group("subsampling")
     c.add_argument("--read-counts", default=",".join(str(c) for c in DEFAULT_COUNTS),
@@ -384,10 +424,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     kr = load_karyoratio(args.karyoratio)
 
-    require("art_illumina", "samtools",
-            "bowtie2" if args.aligner == "bowtie2" else "bwa")
-    if args.aligner == "bowtie2":
-        require("bowtie2-build")
+    if not args.from_bam:
+        if args.reference is None:
+            sys.exit("[error] --reference is required unless --from-bam is used")
+        require("art_illumina", "samtools",
+                "bowtie2" if args.aligner == "bowtie2" else "bwa")
+        if args.aligner == "bowtie2":
+            require("bowtie2-build")
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     spec = kr.read_chrom_file(args.chrom_file)
@@ -397,28 +440,88 @@ def main(argv: list[str] | None = None) -> int:
     y = y_list[0] if y_list else None
 
     counts = sorted(int(c) for c in args.read_counts.split(",") if c.strip())
-
-    female_fa, male_fa = build_genomes(
-        args.reference, autosomes, x, y, args.outdir, args.skip_existing)
-
-    profile = (build_profile(args.profile_from, args.outdir, args.skip_existing)
-               if args.profile_from else None)
-
-    index = build_index(args.reference, args.aligner, args.outdir,
-                        args.threads, args.skip_existing)
-
     pools: dict[str, Pool] = {}
-    for label, genome in (("female", female_fa), ("male", male_fa)):
-        r1, r2 = simulate(genome, label, args.outdir, args.read_length,
-                          args.total_reads, args.fragment_mean, args.fragment_sd,
-                          profile, args.seed, args.skip_existing)
-        bam = map_reads(r1, r2, index, label, args.aligner, args.outdir,
-                        args.threads, args.skip_existing)
-        print(f"[stage 4a] collecting reads for {label}", file=sys.stderr)
-        pools[label] = collect_pool(bam, autosomes + [x], args.min_mapq)
-        print(f"           {pools[label].total_reads:,} reads pass the filters "
-              f"({pools[label].total_reads / (2 * args.total_reads):.1%} of "
-              f"simulated)", file=sys.stderr)
+
+    if args.from_bam:
+        print("[mode] validating on real samples of known sex", file=sys.stderr)
+        for item in args.from_bam:
+            if "=" not in item:
+                sys.exit(f"[error] --from-bam expects SEX=PATH, got {item!r}")
+            label, path = item.split("=", 1)
+            label = label.strip().lower()
+            if label not in ("male", "female"):
+                sys.exit(f"[error] --from-bam sex must be male or female, "
+                         f"got {label!r}")
+            bam = Path(path)
+            if not bam.exists():
+                sys.exit(f"[error] {bam} does not exist")
+            print(f"[stage 4a] collecting reads for {label} ({bam.name})",
+                  file=sys.stderr)
+            pools[label] = collect_pool(bam, autosomes + [x], args.min_mapq,
+                                        jobs=args.jobs or args.threads)
+            print(f"           {pools[label].total_reads:,} reads pass the "
+                  f"filters", file=sys.stderr)
+        if len(pools) < 2:
+            print("[note] only one sex supplied; the summary will cover it "
+                  "alone, which\n"
+                  "       shows the ambiguous rate but cannot demonstrate "
+                  "separation.", file=sys.stderr)
+    else:
+        female_fa, male_fa = build_genomes(
+            args.reference, autosomes, x, y, args.outdir, args.skip_existing)
+
+        profile = (build_profile(args.profile_from, args.outdir,
+                                 args.skip_existing)
+                   if args.profile_from else None)
+
+        if args.index:
+            index = args.index
+            marker = Path(str(index) + (".1.bt2" if args.aligner == "bowtie2"
+                                        else ".bwt"))
+            if not marker.exists():
+                sys.exit(f"[error] no {args.aligner} index at {index} "
+                         f"(expected {marker})")
+            print(f"[stage 3a] using the prebuilt index at {index}",
+                  file=sys.stderr)
+        else:
+            index = build_index(args.reference, args.aligner, args.outdir,
+                                args.threads, args.skip_existing)
+
+        sim_args = dict(outdir=args.outdir, read_length=args.read_length,
+                        total_reads=args.total_reads,
+                        fragment_mean=args.fragment_mean,
+                        fragment_sd=args.fragment_sd, profile=profile,
+                        skip_existing=args.skip_existing)
+
+        # ART is single-threaded, so the two sexes are simulated side by side.
+        # Mapping is not, and gets every thread in turn.
+        if args.serial_simulation:
+            reads = {label: simulate(genome, label, seed=args.seed + i,
+                                     **sim_args)
+                     for i, (label, genome) in
+                     enumerate((("female", female_fa), ("male", male_fa)))}
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            print("[stage 2b] simulating both sexes concurrently", file=sys.stderr)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = {
+                    label: pool.submit(simulate, genome, label,
+                                       seed=args.seed + i, **sim_args)
+                    for i, (label, genome) in
+                    enumerate((("female", female_fa), ("male", male_fa)))
+                }
+                reads = {label: fut.result() for label, fut in futures.items()}
+
+        for label in ("female", "male"):
+            r1, r2 = reads[label]
+            bam = map_reads(r1, r2, index, label, args.aligner, args.outdir,
+                            args.threads, args.skip_existing)
+            print(f"[stage 4a] collecting reads for {label}", file=sys.stderr)
+            pools[label] = collect_pool(bam, autosomes + [x], args.min_mapq,
+                                        jobs=args.jobs or args.threads)
+            print(f"           {pools[label].total_reads:,} reads pass the "
+                  f"filters ({pools[label].total_reads / (2 * args.total_reads):.1%}"
+                  f" of simulated)", file=sys.stderr)
 
     usable = [n for n in counts
               if all(n <= p.total_reads for p in pools.values())]
@@ -427,8 +530,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[note] skipping read counts above the simulated pool: "
               f"{', '.join(str(d) for d in dropped)}", file=sys.stderr)
     if not usable:
-        sys.exit("[error] no requested read count fits in the simulated pool; "
-                 "raise --total-reads")
+        sys.exit("[error] no requested read count fits in the available pool; "
+                 + ("use samples with more reads, or lower --read-counts"
+                    if args.from_bam else "raise --total-reads"))
 
     rng = np.random.default_rng(args.seed)
     per_rep = args.outdir / "replicates.tsv"

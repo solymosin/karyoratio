@@ -223,6 +223,53 @@ Requires `art_illumina`, `bowtie2` (or `bwa`) and `samtools` on PATH;
 ART's built-in HiSeq 2500 model is used, which is adequate for a first pass but
 worth replacing with a profile from the real data before drawing conclusions.
 
+### Where the time goes
+
+```bash
+./calibrate.py ... --threads 16          # aligner, samtools, read counting
+./calibrate.py ... --jobs 8              # read counting only, if it should differ
+./calibrate.py ... --serial-simulation   # one sex at a time, if RAM is tight
+```
+
+`--threads` is passed to `bowtie2-build`, to the aligner and to `samtools
+sort`, which between them account for nearly all the wall time. Building the
+aligner index dominates the first run on a mammalian genome -- a couple of
+hours, several GB of RAM -- and is reused afterwards with `--skip-existing`.
+
+Read simulation runs the two sexes concurrently, because ART is
+single-threaded and the two jobs are independent. Counting reads per sequence
+is spread across processes, one sequence at a time.
+
+Subsampling costs almost nothing, and deliberately so. Only the per-sequence
+tally is ever used, so rather than drawing individual reads and counting them,
+the counts are drawn straight from the multivariate hypergeometric
+distribution. The result is distributed identically, but the cost scales with
+the number of chromosomes instead of the number of reads: several hundred
+replicates over a mammalian-sized pool take well under a second.
+
+### Validating on real samples
+
+Simulation establishes where the thresholds break down under ideal conditions.
+Real samples of known sex carry everything it leaves out: reference bias,
+repeat structure, contamination, library artefacts. The same machinery handles
+both, so a pair of annotated samples can be put through the identical
+downsampling:
+
+```bash
+./calibrate.py --from-bam male=sample_m.bam --from-bam female=sample_f.bam \
+               --chrom-file chroms.tsv --outdir downsample
+```
+
+Stages 1--3 are skipped; the subsampling and the summary are unchanged. Where
+the real samples need more reads than the simulated ones to reach a clean
+call, the gap is what the simulation failed to model. Take the larger of the
+two minima as `--min-reads`.
+
+Low-coverage public data suits this well, because it resembles the conditions
+the estimator is meant for. The Darwin's Ark project, for instance, has
+released ~1x whole genome sequencing of pet dogs with sex recorded in the
+BioSample.
+
 ### Interpreting the result
 
 Two outcomes matter. If any replicate is assigned to the wrong sex, the
