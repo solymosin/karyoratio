@@ -1,0 +1,12 @@
+# karyoratio on the seven faecal metagenomes of Solymosi et al. (in prep.)
+# marten samples: --chrom-file mmarfoi2.1_chroms.tsv
+# fox samples:    --chrom-file vulvul3_chroms.tsv
+# all runs:       --min-mapq 30
+sample	n_target	n_reference	n_mapped	ratio	CI_l	CI_u	rho	rho_p	assignment
+nyest_1_nyest_human	1	18	8479	1.0576	0.9969	1.1183	0.9649	2.64e-11	XX
+nyest_2_roka_human	1	16	50746	0.9817	0.9663	0.9971	0.9779	1.3e-11	XX
+nyest_3_nyest_human	1	18	596	0.9431	0.8270	1.0592	0.7989	4.09e-05	XX
+nyest_4_nyest_human	1	18	348750	0.9586	0.9409	0.9764	0.9965	9.29e-20	XX
+nyest_5_roka_human	1	16	3039	0.8991	0.8429	0.9553	0.8824	2.78e-06	XX
+nyest_6_nyest_human	1	18	14497	0.5126	0.4964	0.5288	0.9456	1.02e-09	XY
+nyest_7_nyest_human	1	18	4191	0.3885	0.3699	0.4072	0.9105	6.25e-08	XY

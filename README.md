@@ -188,16 +188,57 @@ exclude them.
 ## Calibrating for a new species
 
 The thresholds of Mittnik et al. were established on human data. Before relying
-on them for another species it is worth calibrating by simulation: construct
-artificial male and female genomes from the reference, generate reads with an
-error profile matched to the real data, subsample at a range of read counts, and
-run them through the same pipeline. This establishes both whether the thresholds
-transfer and what the minimum usable read count is.
+on them for another species, two things need establishing: whether they separate
+the sexes at all, and how many reads a sample must carry for the separation to
+hold. `calibrate.py` answers both by simulation.
+
+```bash
+./calibrate.py --reference mMarFoi2.1.fa \
+               --chrom-file mmarfoi2.1_chroms.tsv \
+               --outdir calib_marten \
+               --profile-from real_R1.fq.gz \
+               --replicates 30 --threads 8
+```
+
+It builds artificial female and male genomes from the reference at the copy
+number each sex carries, simulates reads from both with ART, maps each set to
+the unmodified reference, then subsamples the mapped reads in memory at a range
+of read counts and computes the ratio for each replicate.
+
+Subsampling after mapping rather than before is what makes this affordable: two
+alignments instead of one per replicate. It also fixes the read count to
+*mapped* reads, which is what `karyoratio` reports, removing the ambiguity
+between generated and mapped counts that otherwise creeps into these
+calibrations.
+
+Two files are written. `replicates.tsv` holds every individual result, for
+plotting the ratio against read count by sex. `summary.tsv` gives, per read
+count and sex, how many replicates were assigned correctly, how many were left
+ambiguous, and how many were assigned to the wrong sex. The script prints the
+lowest read count at which every replicate was classified correctly, which is
+the figure to pass to `--min-reads`.
+
+Requires `art_illumina`, `bowtie2` (or `bwa`) and `samtools` on PATH;
+`art_profiler_illumina` only when `--profile-from` is used. Without a profile,
+ART's built-in HiSeq 2500 model is used, which is adequate for a first pass but
+worth replacing with a profile from the real data before drawing conclusions.
+
+### Interpreting the result
+
+Two outcomes matter. If any replicate is assigned to the wrong sex, the
+thresholds do not transfer and need adjusting; the script says so explicitly.
+If none is, the thresholds hold, and the remaining question is the read count
+below which replicates start falling into the ambiguous interval.
 
 In our own calibration for *Martes foina* and *Vulpes vulpes* the thresholds
 never produced an incorrect assignment, but below a species-specific read count
 a proportion of samples fell into the 0.60--0.80 interval and could not be
 classified.
+
+Note that a male genome is constructed with a single X alongside the doubled
+autosomes, and a Y only if the reference has one. The X-to-autosome ratio does
+not use the Y, so its absence -- as in the red fox and dog references -- costs
+nothing here.
 
 ## Related tools
 
