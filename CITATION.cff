@@ -1,0 +1,47 @@
+cff-version: 1.2.0
+title: karyoratio
+message: >-
+  If you use this software, please cite both the software itself
+  and the method it implements (Mittnik et al. 2016).
+type: software
+authors:
+  - family-names: Solymosi
+    given-names: Norbert
+    orcid: 'https://orcid.org/0000-0001-5246-4151'
+repository-code: 'https://github.com/solymosin/karyoratio'
+abstract: >-
+  Chromosome coverage ratios computed directly from an indexed BAM file.
+  By default it computes Rx, the X-to-autosome read ratio of Mittnik et al.
+  (2016), and estimates genetic sex from it. Unlike existing tools it is
+  species-agnostic, requires no Y chromosome, normalises against the full
+  autosome set, and reports a confidence interval together with a validity
+  criterion. A companion script calibrates the decision thresholds for a new
+  species by simulation.
+keywords:
+  - bioinformatics
+  - genomics
+  - sex determination
+  - non-model organisms
+  - low-coverage sequencing
+  - conservation genetics
+license: MIT
+references:
+  - type: article
+    authors:
+      - family-names: Mittnik
+        given-names: Alissa
+      - family-names: Wang
+        given-names: Chuan-Chao
+      - family-names: Svoboda
+        given-names: Jiří
+      - family-names: Krause
+        given-names: Johannes
+    title: >-
+      A molecular approach to the sexing of the triple burial at the Upper
+      Paleolithic site of Dolní Věstonice
+    journal: PLoS ONE
+    year: 2016
+    volume: 11
+    issue: 10
+    start: e0163019
+    doi: 10.1371/journal.pone.0163019
