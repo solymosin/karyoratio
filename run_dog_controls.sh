@@ -31,8 +31,15 @@ MIN_MAPQ="${MIN_MAPQ:-30}"
 REPLICATES="${REPLICATES:-30}"
 READ_COUNTS="${READ_COUNTS:-1000,1500,2000,2500,3000,5000,7500,10000,25000,50000,100000,250000}"
 
-MALE_RUN="${MALE_RUN:-SRR30353844}"
-FEMALE_RUN="${FEMALE_RUN:-SRR30353845}"
+# Samples as "sex:run" pairs. Override with SAMPLES, or point SAMPLE_SHEET at
+# a two-column TSV of <run> <sex>.
+SAMPLES="${SAMPLES:-male:SRR30353844 female:SRR30353845 male:SRR30353846 female:SRR30353847}"
+SAMPLE_SHEET="${SAMPLE_SHEET:-}"
+
+if [[ -n "$SAMPLE_SHEET" ]]; then
+  [[ -f "$SAMPLE_SHEET" ]] || { echo "not found: $SAMPLE_SHEET" >&2; exit 1; }
+  SAMPLES=$(awk 'NF>=2 && $1 !~ /^#/ {printf "%s:%s ", $2, $1}' "$SAMPLE_SHEET")
+fi
 
 echo "== checking dependencies =="
 MISSING=()
@@ -70,8 +77,9 @@ cd controls
 if command -v esearch >/dev/null 2>&1; then
   echo
   echo "== BioSample sex annotation =="
-  for run in "$MALE_RUN" "$FEMALE_RUN"; do
-    printf '  %s: ' "$run"
+  for pair in $SAMPLES; do
+    run="${pair#*:}"
+    printf '  %s (labelled %s): ' "$run" "${pair%%:*}"
     esearch -db sra -query "$run" 2>/dev/null \
       | elink -target biosample 2>/dev/null \
       | efetch -format xml 2>/dev/null \
@@ -119,8 +127,18 @@ map_run () {
   rm -f "${run}_1.fastq" "${run}_2.fastq"
 }
 
-map_run "$MALE_RUN" male
-map_run "$FEMALE_RUN" female
+FROM_BAM=()
+for pair in $SAMPLES; do
+  sex="${pair%%:*}"; run="${pair#*:}"
+  case "$sex" in
+    male|female) ;;
+    *) echo "sex must be male or female, got '$sex' in '$pair'" >&2; exit 1 ;;
+  esac
+  map_run "$run" "${sex}_${run}"
+  FROM_BAM+=(--from-bam "${sex}=dog_${sex}_${run}.bam")
+done
+echo
+echo "   ${#FROM_BAM[@]} arguments prepared for $(( ${#FROM_BAM[@]} / 2 )) samples"
 
 # --------------------------------------------------------------------------- #
 # 3. Assignment at full depth
@@ -129,7 +147,7 @@ map_run "$FEMALE_RUN" female
 echo
 echo "== assignment at full depth =="
 python3 "$KARYODIR/karyoratio.py" \
-    --bam dog_male.bam dog_female.bam \
+    --bam dog_*.bam \
     --chrom-file "../$CHROMS" \
     --min-mapq "$MIN_MAPQ" \
     --per-chrom per_chrom.tsv \
@@ -137,9 +155,12 @@ python3 "$KARYODIR/karyoratio.py" \
 column -t -s$'\t' full_depth.tsv 2>/dev/null || cat full_depth.tsv
 
 echo
-echo "   dog_male should be XY and dog_female XX. Anything else means the"
-echo "   estimator does not work on this species as configured, and nothing"
-echo "   below is worth reading until that is resolved."
+echo "   Every male_* sample should be XY and every female_* XX. Anything else"
+echo "   means the estimator does not work on this species as configured, and"
+echo "   nothing below is worth reading until that is resolved."
+echo
+echo "   Watch the spread of 'ratio' within a sex: if samples of the same sex"
+echo "   disagree, a threshold has to clear the least favourable of them."
 
 # --------------------------------------------------------------------------- #
 # 4. Behaviour under downsampling, on real data
@@ -151,8 +172,7 @@ echo "   $REPLICATES replicates at each of: $READ_COUNTS"
 echo
 
 python3 "$KARYODIR/calibrate.py" \
-    --from-bam male=dog_male.bam \
-    --from-bam female=dog_female.bam \
+    "${FROM_BAM[@]}" \
     --chrom-file "../$CHROMS" \
     --karyoratio "$KARYODIR/karyoratio.py" \
     --outdir downsample \
@@ -176,11 +196,17 @@ Files written under $(pwd):
 
 Comparing this with the simulation:
 
-  The two summary tables answer the same question from different directions.
-  Where the real samples need more reads than the simulated ones to reach a
-  clean call, the gap is what the simulation failed to model -- mapping bias,
-  repeats, contamination. Take the larger of the two minima as --min-reads.
+  Both report the depth at which the unclassified rate falls below 10, 5 and
+  1 per cent, so the two are directly comparable. Real samples have needed
+  roughly twice the depth of simulated ones, because a simulation draws every
+  replicate from one genome and so contains no variation between individuals.
+  Take the real figure as the one to use.
+
+  Watch the full-pool ratio per sample above as well. A threshold has to clear
+  the least favourable individual, not the mean, and one sample sitting well
+  below the rest is worth more attention than the average.
 
   A real sample assigned to the wrong sex at any depth is more serious than an
-  ambiguous one, and worth tracing through per_chrom.tsv before going further.
+  unclassified one, and worth tracing through per_chrom.tsv before going
+  further.
 EOF

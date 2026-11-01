@@ -8,12 +8,33 @@ comparison itself is parameterised, so other karyotypic questions can be
 expressed with the same machinery -- but the calibrated decision rule applies
 to $R_x$ alone, and the script says so when you depart from it.
 
+A companion script calibrates the thresholds for a new species by simulation,
+and can put real samples of known sex through the identical procedure.
+
+## Contents
+
+| file | what it does |
+|---|---|
+| `karyoratio.py` | the estimator: ratio, confidence interval, assignment |
+| `calibrate.py` | calibration by simulation, or validation on real samples |
+| `chromfile_from_report.py` | builds a chromosome file from an NCBI sequence report |
+| `pairs_to_reads.py` | measures the generated-pair to mapped-read factor |
+| `run_calibration.sh` | calibration wrapper for a local genome and index |
+| `run_dog_calibration.sh` | worked example: dog, from a prebuilt bowtie2 index |
+| `run_dog_controls.sh` | worked example: validation on real dogs of known sex |
+| `plot_calibration.R` | figures from the calibration output |
+| `*_chroms.tsv` | chromosome definitions for the stone marten and red fox |
+
 ## Installation
 
 ```bash
 pip install pysam numpy scipy
-chmod +x karyoratio.py
+chmod +x karyoratio.py calibrate.py chromfile_from_report.py pairs_to_reads.py
 ```
+
+Calibration additionally needs `art_illumina`, `bowtie2` (or `bwa`) and
+`samtools` on PATH, and `art_profiler_illumina` if an error profile is derived
+from real reads.
 
 ## Usage
 
@@ -39,32 +60,38 @@ NC_132781.1	autosome
 NC_132796.1	X
 ```
 
-The sequence names must match the BAM header exactly.
+The sequence names must match the BAM header exactly. Note that SAM forbids
+whitespace in a reference name, so an aligner writes only the part up to the
+first space even when the index stores a full FASTA header; the chromosome
+file has to carry that short form.
 
-Two example files are provided: `vulvul3_chroms.tsv` (red fox, complete) and
-`mmarfoi2.1_chroms.tsv` (stone marten, sex chromosomes and mitochondrion only).
+Two example files are provided: `vulvul3_chroms.tsv` (red fox) and
+`mmarfoi2.1_chroms.tsv` (stone marten).
 
-### Generating the file from a BAM
+### Building the file
 
-Rather than transcribing accessions by hand, build the file from the header of
-a BAM mapped to the reference in question:
+From a BAM, by length:
 
 ```bash
-./karyoratio.py --bam marten_sample.bam --make-chrom-file \
+./karyoratio.py --bam sample.bam --make-chrom-file \
                 --x OZ199613.1 --y OZ199623.1 --mt OZ199624.1 \
                 --prefix OZ --min-autosome-length 10000000 \
-                -o mmarfoi2.1_chroms.tsv
+                -o chroms.tsv
 ```
 
-Every sequence at or above `--min-autosome-length` becomes an autosome;
-shorter ones are listed at the end as comments so they can be inspected and
-promoted by hand if any belong. `--prefix` restricts consideration to names
-with a given prefix, which keeps the contigs of a co-mapped genome out when a
-composite reference was used.
+Or from an NCBI sequence report, which states the role of every sequence so
+that nothing is inferred from names or lengths:
 
-**Check the result before using it.** The criterion is a length cutoff, which
-works when the assembly is chromosome-length and the unplaced scaffolds are
-clearly smaller, but it is a heuristic, not an authority on the karyotype.
+```bash
+bowtie2-inspect -n my_index > names.txt
+./chromfile_from_report.py --names names.txt \
+    --report sequence_report.jsonl --expect-autosomes 38 -o chroms.tsv
+```
+
+The second form matches roles to whatever naming the index uses: RefSeq
+accessions, GenBank accessions, UCSC-style names or bare chromosome numbers.
+Either way, check the result; both are heuristics about an assembly, not
+authorities on a karyotype.
 
 ## Output
 
@@ -91,6 +118,8 @@ uneven for the ratio to be meaningful. Male samples give systematically lower
 values than females, because one X chromosome departs from the expected
 length-count relationship.
 
+`example_output.tsv` shows the tool run on seven faecal metagenomes.
+
 ## How the ratio is computed
 
 The target sequences are **pooled**: their reads and their lengths are summed,
@@ -115,36 +144,7 @@ but because it is a denominator that does not belong.
 The Y chromosome is excluded from the defaults for a different reason: its
 coverage depends on the very thing the method is trying to determine.
 
-## Other comparisons
-
-`--target` and `--reference` take roles or literal sequence names. The three
-`--labels` and the two thresholds are likewise free, so a different karyotypic
-question can be expressed directly:
-
-```bash
-# ZW system: the female is the heterogametic sex, so the labels swap
-./karyoratio.py --bam bird.bam --chrom-file bird_chroms.tsv \
-                --target Z --reference autosome \
-                --labels ZW,n.a.,ZZ
-
-# relative copy number of one chromosome against the rest
-./karyoratio.py --bam sample.bam --chrom-file chroms.tsv \
-                --target chr21 --reference autosome \
-                --lower 1.25 --upper 1.40 \
-                --labels disomic,n.a.,trisomic
-```
-
-> **The thresholds do not generalise.** The 0.60/0.80 rule was established for
-> $R_x$ in diploid XY systems, and nothing about it transfers to another
-> comparison. The same holds for any `--min-rho` or `--min-reads` cutoff
-> derived for $R_x$: the correlation criterion in particular behaves
-> differently between the sexes, and its behaviour under a different comparison
-> is simply unknown. The script computes the ratio and its interval as defined
-> whatever you ask of it, and prints a warning whenever the comparison or the
-> thresholds depart from the defaults. Treat the `assignment` column as
-> meaningful only after calibrating.
-
-## The thresholds alone are not enough
+## Depth, and when not to trust an assignment
 
 The 0.60/0.80 rule separates the sexes cleanly once coverage is adequate. Below
 that, the male and female distributions overlap, and a confidence interval can
@@ -155,22 +155,120 @@ call that the data do not justify.
 Two guards are available, both inactive by default:
 
 ```bash
-./karyoratio.py --bam sample.bam --chrom-file chroms.tsv \
-                --min-reads 5800 --min-rho 0.90
+./karyoratio.py --bam sample.bam --chrom-file chroms.tsv --min-reads 7500
 ```
 
-`--min-reads` returns the ambiguous label below a given number of mapped reads,
-whatever the interval says. `--min-rho` does the same below a given
-length-count correlation.
+**`--min-reads` is the one to set.** Nearly every incorrect assignment we have
+observed, in simulation and on real samples alike, came from a sample with too
+few reads rather than from an unusual distribution of them. On thirty real dogs
+of known sex, a cut at 2,500 mapped reads removed every incorrect assignment
+while keeping 7,446 of 9,184 correct ones.
+
+`--min-rho` returns the ambiguous label below a given length-count correlation.
+It is a diagnostic rather than a primary filter: it catches a sample that has
+ample reads distributed oddly across the chromosomes -- uneven coverage, or a
+mis-specified chromosome file -- but it is an expensive way to guard against
+low depth. On the same thirty dogs the cut needed to remove every incorrect
+assignment (0.90) discarded a further thousand correct ones compared with
+`--min-reads`, and combining the two was worse than either alone. Note also
+that it behaves asymmetrically between the sexes, since males give lower
+correlations at the same depth.
 
 There is no universal default for either, because the usable minimum depends on
-the chromosome count and size distribution of the species. Establish it by
-calibration and then set it explicitly.
+the species. Establish it by calibration and set it explicitly.
 
-Note that `--min-rho` behaves asymmetrically between the sexes: male samples
-give systematically lower correlations than females at the same coverage. A
-threshold strict enough to exclude poor female samples may discard good male
-ones.
+## Calibrating for a new species
+
+```bash
+./calibrate.py --reference genome.fa --chrom-file chroms.tsv \
+               --index bowtie2_index --outdir calib \
+               --profile-from real_R1.fq.gz \
+               --replicates 200 --threads 16
+```
+
+It builds artificial female and male genomes from the reference at the copy
+number each sex carries, simulates reads from both with ART, maps each set to
+the unmodified reference, then subsamples the mapped reads and computes the
+ratio for each replicate.
+
+Mapping once per sex and subsampling afterwards is what makes this affordable:
+two alignments instead of one per replicate. **Subsampling draws pairs, not
+individual reads**, because the two mates of a pair almost always land on the
+same chromosome and are therefore not two independent observations; sampling
+reads singly understates the spread by close to a factor of two. The target is
+expressed in mapped reads, which is what `karyoratio` reports, and converted
+internally using the pair-to-read ratio observed in the pool.
+
+The index should be built from the host genome alone. Competitive mapping
+against a host-plus-human reference belongs to the analysis of real samples,
+where it absorbs contaminating reads; it has no place in a calibration, where
+every simulated read is host-derived.
+
+### Reading the result
+
+`replicates.tsv` holds every individual result; `summary.tsv` gives, per depth
+and sex, how many replicates were assigned correctly, how many were left
+unclassified, and how many were assigned to the wrong sex.
+
+The script reports the depth at which the unclassified **rate** falls below 10,
+5 and 1 per cent. It does not report the first depth with no unclassified
+replicate, because that is not a property of the method: run more replicates
+and rare events surface, pushing it upward without anything having changed.
+Resolving a rate near 1 per cent needs on the order of 200 replicates.
+
+An incorrect assignment is a different matter from an unclassified one, and the
+depths at which any occurred are listed separately.
+
+### Validating on real samples
+
+Simulation establishes where the thresholds break down under ideal conditions.
+Real samples of known sex carry everything it leaves out: reference bias,
+repeat structure, contamination, and above all variation between individuals.
+The same machinery handles both:
+
+```bash
+./calibrate.py --from-bam male=m1.bam --from-bam female=f1.bam \
+               --from-bam male=m2.bam --from-bam female=f2.bam \
+               --chrom-file chroms.tsv --outdir downsample
+```
+
+Stages 1--3 are skipped and each sample is kept separate, since the spread
+between individuals is part of what the validation is meant to reveal.
+
+### What the calibration found
+
+Three species, 200 replicates per level, depth in mapped reads:
+
+| | <10% | <5% | <1% |
+|---|---|---|---|
+| stone marten, simulated | 4,000--5,000 | 7,500 | 15,000 |
+| red fox, simulated | 4,000--5,000 | 7,500 | 10,000--15,000 |
+| dog, simulated | 4,000--5,000 | 5,000--10,000 | 15,000 |
+| **dog, 30 real individuals** | **7,500** | **10,000--25,000** | **25,000** |
+
+The three simulations agree closely despite karyotypes of 16, 18 and 38
+autosomes, which suggests the thresholds carry across mammals reasonably well.
+
+Real samples needed roughly twice the depth. The reason is visible in the
+individual ratios: across thirty dogs the female $R_x$ ranged from 0.858 to
+1.008, so the least favourable individual sat only 0.06 above the 0.80
+threshold while the simulation, drawing every replicate from one genome, put it
+at 0.93. **A minimum depth from simulation is therefore a floor, not a
+sufficient condition.** Where real samples of known sex can be obtained, they
+are worth the trouble.
+
+### Converting between generated pairs and mapped reads
+
+A simulation that subsamples FASTQ files counts generated read pairs; what
+reaches the ratio is mapped reads. The factor is stable but has to be measured:
+
+```bash
+./pairs_to_reads.py --table sim_results.csv --pairs read_count --mapped s
+```
+
+For the stone marten it was 1.944--1.946 and for the red fox 1.921--1.923
+mapped reads per generated pair. A figure axis in one unit cannot be compared
+with a table column in the other.
 
 ## Working from a BAM rather than from idxstats
 
@@ -185,107 +283,25 @@ by default. In low-coverage data they carry real signal, and excluding them can
 silently drop the only reads covering a region. Use `--proper-pairs-only` to
 exclude them.
 
-## Calibrating for a new species
+## Other comparisons
 
-The thresholds of Mittnik et al. were established on human data. Before relying
-on them for another species, two things need establishing: whether they separate
-the sexes at all, and how many reads a sample must carry for the separation to
-hold. `calibrate.py` answers both by simulation.
-
-```bash
-./calibrate.py --reference mMarFoi2.1.fa \
-               --chrom-file mmarfoi2.1_chroms.tsv \
-               --outdir calib_marten \
-               --profile-from real_R1.fq.gz \
-               --replicates 30 --threads 8
-```
-
-It builds artificial female and male genomes from the reference at the copy
-number each sex carries, simulates reads from both with ART, maps each set to
-the unmodified reference, then subsamples the mapped reads in memory at a range
-of read counts and computes the ratio for each replicate.
-
-Subsampling after mapping rather than before is what makes this affordable: two
-alignments instead of one per replicate. It also fixes the read count to
-*mapped* reads, which is what `karyoratio` reports, removing the ambiguity
-between generated and mapped counts that otherwise creeps into these
-calibrations.
-
-Two files are written. `replicates.tsv` holds every individual result, for
-plotting the ratio against read count by sex. `summary.tsv` gives, per read
-count and sex, how many replicates were assigned correctly, how many were left
-ambiguous, and how many were assigned to the wrong sex. The script prints the
-lowest read count at which every replicate was classified correctly, which is
-the figure to pass to `--min-reads`.
-
-Requires `art_illumina`, `bowtie2` (or `bwa`) and `samtools` on PATH;
-`art_profiler_illumina` only when `--profile-from` is used. Without a profile,
-ART's built-in HiSeq 2500 model is used, which is adequate for a first pass but
-worth replacing with a profile from the real data before drawing conclusions.
-
-### Where the time goes
+`--target` and `--reference` take roles or literal sequence names. The three
+`--labels` and the two thresholds are likewise free, so a different karyotypic
+question can be expressed directly:
 
 ```bash
-./calibrate.py ... --threads 16          # aligner, samtools, read counting
-./calibrate.py ... --jobs 8              # read counting only, if it should differ
-./calibrate.py ... --serial-simulation   # one sex at a time, if RAM is tight
+# ZW system: the female is the heterogametic sex, so the labels swap
+./karyoratio.py --bam bird.bam --chrom-file bird_chroms.tsv \
+                --target Z --reference autosome --labels ZW,n.a.,ZZ
 ```
 
-`--threads` is passed to `bowtie2-build`, to the aligner and to `samtools
-sort`, which between them account for nearly all the wall time. Building the
-aligner index dominates the first run on a mammalian genome -- a couple of
-hours, several GB of RAM -- and is reused afterwards with `--skip-existing`.
-
-Read simulation runs the two sexes concurrently, because ART is
-single-threaded and the two jobs are independent. Counting reads per sequence
-is spread across processes, one sequence at a time.
-
-Subsampling costs almost nothing, and deliberately so. Only the per-sequence
-tally is ever used, so rather than drawing individual reads and counting them,
-the counts are drawn straight from the multivariate hypergeometric
-distribution. The result is distributed identically, but the cost scales with
-the number of chromosomes instead of the number of reads: several hundred
-replicates over a mammalian-sized pool take well under a second.
-
-### Validating on real samples
-
-Simulation establishes where the thresholds break down under ideal conditions.
-Real samples of known sex carry everything it leaves out: reference bias,
-repeat structure, contamination, library artefacts. The same machinery handles
-both, so a pair of annotated samples can be put through the identical
-downsampling:
-
-```bash
-./calibrate.py --from-bam male=sample_m.bam --from-bam female=sample_f.bam \
-               --chrom-file chroms.tsv --outdir downsample
-```
-
-Stages 1--3 are skipped; the subsampling and the summary are unchanged. Where
-the real samples need more reads than the simulated ones to reach a clean
-call, the gap is what the simulation failed to model. Take the larger of the
-two minima as `--min-reads`.
-
-Low-coverage public data suits this well, because it resembles the conditions
-the estimator is meant for. The Darwin's Ark project, for instance, has
-released ~1x whole genome sequencing of pet dogs with sex recorded in the
-BioSample.
-
-### Interpreting the result
-
-Two outcomes matter. If any replicate is assigned to the wrong sex, the
-thresholds do not transfer and need adjusting; the script says so explicitly.
-If none is, the thresholds hold, and the remaining question is the read count
-below which replicates start falling into the ambiguous interval.
-
-In our own calibration for *Martes foina* and *Vulpes vulpes* the thresholds
-never produced an incorrect assignment, but below a species-specific read count
-a proportion of samples fell into the 0.60--0.80 interval and could not be
-classified.
-
-Note that a male genome is constructed with a single X alongside the doubled
-autosomes, and a Y only if the reference has one. The X-to-autosome ratio does
-not use the Y, so its absence -- as in the red fox and dog references -- costs
-nothing here.
+> **The thresholds do not generalise.** The 0.60/0.80 rule was established for
+> $R_x$ in diploid XY systems, and nothing about it transfers to another
+> comparison. The script computes the ratio and its interval as defined
+> whatever you ask of it, and warns whenever the comparison or the thresholds
+> depart from the defaults. `calibrate.py` accepts the same `--target`,
+> `--ref-chroms`, `--lower`, `--upper` and `--labels`, and reports where the
+> two groups actually sit so thresholds can be read off rather than guessed.
 
 ## Related tools
 
@@ -301,13 +317,14 @@ Two existing tools address the same question for human data:
 
 Both are human-specific and depend on a Y chromosome. `karyoratio` differs in
 being species-agnostic, in requiring no Y chromosome -- which many non-model
-reference genomes lack, including the red fox and the dog -- in normalising
-against the full autosome set rather than a single chromosome, and in reporting
-a confidence interval and a validity criterion rather than a point estimate.
+reference genomes lack, including the red fox -- in normalising against the
+full autosome set rather than a single chromosome, in reporting a confidence
+interval and a validity criterion rather than a point estimate, and in shipping
+the means to calibrate itself for a species it has not seen.
 
 ## Citation
 
-If you use this script, please cite Mittnik et al. (2016) for the method.
+If you use this software, please cite Mittnik et al. (2016) for the method.
 
 ```
 Mittnik A, Wang C-C, Svoboda J, Krause J (2016) A molecular approach to the

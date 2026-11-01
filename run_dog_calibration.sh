@@ -11,9 +11,11 @@
 # used to simulate reads are exactly those the aligner reports, which is the
 # usual way a prebuilt index goes wrong.
 #
-# The dog karyotype is 2n = 78: 38 autosomes plus X. The assembly carries no
-# Y chromosome, which is why the X-to-autosome ratio is the right estimator
-# here -- a Y-based one is not available.
+# The dog karyotype is 2n = 78: 38 autosomes plus X and Y. ROS_Cfam_1.0 was
+# assembled from a male and does carry a Y, unlike the older CanFam3.1 and
+# unlike the red fox reference. That makes no difference to the calibration:
+# the X-to-autosome ratio does not use the Y, which is excluded from the
+# comparison by default, though it is included in the simulated male genome.
 #
 # Usage:
 #   ./run_dog_calibration.sh [workdir]
@@ -33,7 +35,7 @@ KARYODIR="${KARYODIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 THREADS="${THREADS:-8}"
 REPLICATES="${REPLICATES:-30}"
 TOTAL_READS="${TOTAL_READS:-2000000}"
-READ_LENGTH="${READ_LENGTH:-151}"
+READ_LENGTH="${READ_LENGTH:-150}"
 READ_COUNTS="${READ_COUNTS:-1000,1500,2000,2500,3000,5000,7500,10000,25000,50000,100000,250000}"
 PROFILE_FROM="${PROFILE_FROM:-}"
 BUILD_INDEX="${BUILD_INDEX:-0}"
@@ -67,7 +69,7 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
   echo "  conda install -c conda-forge ncbi-datasets-cli   # only with BUILD_INDEX=1" >&2
   exit 1
 fi
-for f in karyoratio.py calibrate.py; do
+for f in karyoratio.py calibrate.py chromfile_from_report.py; do
   [[ -f "$KARYODIR/$f" ]] || { echo "not found: $KARYODIR/$f" >&2; exit 1; }
 done
 python3 -c "import pysam, numpy, scipy" 2>/dev/null \
@@ -106,20 +108,48 @@ if [[ "$BUILD_INDEX" == "1" ]]; then
 
 else
 
-  if [[ ! -f "${INDEX}.1.bt2" ]]; then
-    echo "== downloading the prebuilt bowtie2 index for $ASSEMBLY =="
-    echo "   $INDEX_URL"
-    curl -L --fail --progress-bar -o bt2_index.zip "$INDEX_URL"
-    unzip -o -q bt2_index.zip -d bt2_index && rm -f bt2_index.zip
+  # The index is considered usable only when the whole set is present; a
+  # partial set produces a confusing complaint about an "older version".
+  index_complete () {
+    local base="$1" ext
+    for ext in 1 2 3 4 rev.1 rev.2; do
+      [[ -f "${base}.${ext}.bt2" || -f "${base}.${ext}.bt2l" ]] || return 1
+    done
+    return 0
+  }
 
-    FIRST=$(find bt2_index -name "*.1.bt2*" | head -1)
+  if ! index_complete "$INDEX"; then
+    if [[ ! -d bt2_index ]]; then
+      echo "== downloading the prebuilt bowtie2 index for $ASSEMBLY =="
+      echo "   $INDEX_URL"
+      curl -L --fail --progress-bar -o bt2_index.zip "$INDEX_URL"
+      unzip -o -q bt2_index.zip -d bt2_index && rm -f bt2_index.zip
+    else
+      echo "== linking the already downloaded index =="
+    fi
+
+    # Match only the forward .1 file: '*.1.bt2*' would also match
+    # '*.rev.1.bt2', which would truncate the basename to '....rev'.
+    FIRST=$(find bt2_index -name "*.1.bt2" -o -name "*.1.bt2l" \
+            | grep -v '\.rev\.' | head -1)
     [[ -n "$FIRST" ]] || { echo "no bowtie2 index inside the archive" >&2; exit 1; }
-    BASE="${FIRST%.1.bt2*}"
+    BASE="${FIRST%.1.bt2}"; BASE="${BASE%.1.bt2l}"
     echo "   index basename: $BASE"
-    for part in "$BASE".*; do
+
+    rm -f calib/ref_index.*
+    for part in "$BASE".*.bt2 "$BASE".*.bt2l; do
+      [[ -e "$part" ]] || continue
       ln -sf "$(cd "$(dirname "$part")" && pwd)/$(basename "$part")" \
              "calib/ref_index.${part#"$BASE".}"
     done
+
+    echo "   linked: $(ls calib/ref_index.* 2>/dev/null | wc -l) files"
+    if ! index_complete "$INDEX"; then
+      echo "the index set is incomplete after linking:" >&2
+      ls -l calib/ref_index.* >&2 || true
+      echo "expected .1 .2 .3 .4 .rev.1 .rev.2; inspect bt2_index/" >&2
+      exit 1
+    fi
   fi
 
   if [[ ! -f "$REF.fai" ]]; then
@@ -156,79 +186,23 @@ else
 
   bowtie2-inspect -n "$INDEX" > index_names.txt
 
-  python3 - "${REPORT:-}" index_names.txt "$CHROMS" <<'PY'
-import json, sys
-report, names_file, out = sys.argv[1], sys.argv[2], sys.argv[3]
-names = [l.strip() for l in open(names_file) if l.strip()]
-nameset = set(names)
-
-autosomes, x, y, mt = [], None, None, None
-
-def pick(rec):
-    """Which of this record's identifiers does the index actually use?"""
-    chrname = str(rec.get("chrName", ""))
-    for cand in (rec.get("refseqAccession"), rec.get("genbankAccession"),
-                 rec.get("ucscStyleName"), f"chr{chrname}", chrname):
-        if cand and cand in nameset:
-            return cand
-    return None
-
-if report:
-    for line in open(report):
-        rec = json.loads(line)
-        if rec.get("role") != "assembled-molecule":
-            continue
-        used = pick(rec)
-        if not used:
-            continue
-        loc = rec.get("assignedMoleculeLocationType", "")
-        label = str(rec.get("chrName", "")).upper()
-        if loc == "Mitochondrion" or label == "MT":
-            mt = used
-        elif loc == "Chromosome":
-            if label == "X":
-                x = used
-            elif label == "Y":
-                y = used
-            else:
-                autosomes.append(used)
-else:
-    # Without a sequence report, fall back to the names themselves, keeping
-    # only the 38 autosomes the dog karyotype specifies.
-    for n in names:
-        bare = n[3:] if n.lower().startswith("chr") else n
-        if bare.upper() == "X":
-            x = n
-        elif bare.upper() == "Y":
-            y = n
-        elif bare.upper() in ("M", "MT"):
-            mt = n
-        elif bare.isdigit() and 1 <= int(bare) <= 38:
-            autosomes.append(n)
-
-if x is None:
-    sys.exit("could not identify the X chromosome; inspect index_names.txt "
-             "and write the chromosome file by hand")
-if not autosomes:
-    sys.exit("could not identify any autosome; inspect index_names.txt")
-
-with open(out, "w") as fh:
-    fh.write("# Canis lupus familiaris, ROS_Cfam_1.0 (GCF_014441545.1)\n")
-    fh.write(f"# {len(autosomes)} autosomes + X"
-             + (", Y" if y else ", no Y in this assembly")
-             + (", MT\n" if mt else "\n"))
-    for acc in autosomes:
-        fh.write(f"{acc}\tautosome\n")
-    fh.write(f"{x}\tX\n")
-    if y:
-        fh.write(f"{y}\tY\n")
-    if mt:
-        fh.write(f"{mt}\tMT\n")
-
-print(f"  {len(autosomes)} autosomes, X = {x}"
-      + (f", Y = {y}" if y else ", no Y")
-      + (f", MT = {mt}" if mt else ""))
-PY
+  set +e
+  python3 "$KARYODIR/chromfile_from_report.py" \
+      --names index_names.txt \
+      ${REPORT:+--report "$REPORT"} \
+      --max-autosome 38 \
+      --expect-autosomes 38 \
+      --comment "Canis lupus familiaris, $ASSEMBLY ($ACCESSION)" \
+      -o "$CHROMS"
+  RC=$?
+  set -e
+  # Exit 2 is the "unexpected autosome count" warning, which is survivable;
+  # anything else, including a missing script, is not.
+  if [[ $RC -ne 0 && $RC -ne 2 ]] || [[ ! -s "$CHROMS" ]]; then
+    rm -f "$CHROMS"
+    echo "could not build $CHROMS (exit $RC); inspect index_names.txt" >&2
+    exit 1
+  fi
 
   N_AUT=$(grep -c $'\tautosome$' "$CHROMS")
   echo "   sanity check: the dog karyotype is 2n = 78, so 38 autosomes expected"
@@ -293,8 +267,10 @@ Reading the result:
 
   * any value in the 'wrong' column means the 0.60/0.80 thresholds do not
     transfer to the dog and need adjusting before use
-  * the lowest read count whose 'ambiguous' column is zero for both sexes is
-    the figure to pass to karyoratio as --min-reads
+  * for the depth to pass to karyoratio as --min-reads, read the rate table
+    printed above rather than the first depth with no unclassified replicate;
+    that depth rises with the number of replicates and is not a property of
+    the method
 
 Next, validate on real samples of known sex:
 
