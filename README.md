@@ -20,7 +20,6 @@ and can put real samples of known sex through the identical procedure.
 | `chromfile_from_report.py` | builds a chromosome file from an NCBI sequence report |
 | `pairs_to_reads.py` | measures the generated-pair to mapped-read factor |
 | `run_calibration.sh` | calibration wrapper for a local genome and index |
-| `plot_calibration.R` | figures from the calibration output |
 | `*_chroms.tsv` | chromosome definitions for the stone marten and red fox |
 
 ## Installation
@@ -106,19 +105,21 @@ One row per BAM:
 | `rho`, `rho_p` | Spearman correlation of sequence length against read count |
 | `assignment` | one of the three `--labels`, default `XY` / `n.a.` / `XX` |
 
-Under the defaults `ratio` is $R_x$ and `assignment` applies the decision rule
-of Mittnik et al.: `XY` if `CI_u` is below 0.60, `XX` if `CI_l` is above 0.80,
-`n.a.` otherwise.
+Under the defaults `ratio` is $R_x$ and `assignment` follows the decision rule
+of Mittnik et al., which amounts to a pair of one-sided tests: `XY` is returned
+when $R_x \geq 0.60$ is rejected (`CI_u` < 0.60) and `XX` when
+$R_x \leq 0.80$ is rejected (`CI_l` > 0.80), each at a nominal one-sided level
+of 2.5 per cent; otherwise `n.a.`. `CI_l` and `CI_u` bound the nominal 95 per
+cent confidence interval, $R_x \pm 1.96 \times SE$, with SE the standard error
+of the mean over the autosomes, as in the original method; the interval itself
+makes no probability statement about where a sample's ratio lies.
 
-`CI_l` and `CI_u` are $R_x \pm 1.96 \times SE$, with SE the standard error of
-the mean over the autosomes, as in the original method. Despite the name, this
-is not a calibrated 95 per cent confidence interval for a sample's $R_x$. Every
-per-autosome term shares the same X count, so the sampling noise of that count,
-which dominates at low depth, never enters the SE. In simulation the spread of
-$R_x$ between replicates was roughly 2.5 to 8 times the reported SE at depths up
-to 100,000 read pairs. The interval is best read as the input to a decision rule
-whose error rates are established by calibration (below), not as a statement of
-coverage.
+The nominal level is not attained. Every per-autosome term shares the same X
+count, so the sampling noise of that count, which dominates at low depth, never
+enters the SE. In simulation the spread of $R_x$ between replicates was roughly
+2.5 to 8 times the reported SE at depths up to 100,000 read pairs. The error
+rates of the rule are therefore those established by calibration (below), not
+the nominal ones.
 
 `rho` is a validity criterion, not part of the estimate. Read counts should
 scale with sequence length; a low value means the mapping is too sparse or too
@@ -140,6 +141,13 @@ ratio_i = (m_T / s_T) / (m_i / s_i)
 ```
 
 and the reported value is the mean of `ratio_i` across the reference set.
+
+The X chromosome carries a slightly smaller share of uniquely mappable sequence
+than the autosomes, so a MAPQ filter lowers the ratio below the value the
+karyotype prescribes. In simulated female genomes of the stone marten and the
+red fox the ratio is 1.00 without a threshold and 0.96 at MAPQ 30, and it falls
+further as the threshold rises. Calibrate at the threshold you intend to use,
+and read samples against the calibrated centre rather than against 1.00.
 
 The normalising totals of the original formulation cancel in this quotient, so
 **a sequence present in neither set has no effect on the result**. What matters
