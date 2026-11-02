@@ -26,6 +26,12 @@
 # SMOKE=1        quick end-to-end check first
 # SPECIES=marten only one species
 #
+# Fragment length: ART needs a mean and an SD. The defaults below were measured
+# with `samtools stats` on the real alignments -- sample 1 for the marten and
+# sample 2 for the fox -- and are the same samples the error profiles come
+# from. Override with MARTEN_FRAGMENT_MEAN, MARTEN_FRAGMENT_SD,
+# FOX_FRAGMENT_MEAN, FOX_FRAGMENT_SD.
+#
 set -euo pipefail
 
 WORKDIR="${1:-mf_calibration}"
@@ -46,6 +52,12 @@ FOX_INDEX="${FOX_INDEX:-}"
 MARTEN_PROFILE="${MARTEN_PROFILE:-}"
 FOX_PROFILE="${FOX_PROFILE:-}"
 
+# Fragment length per species, from samtools stats on the real alignments.
+MARTEN_FRAGMENT_MEAN="${MARTEN_FRAGMENT_MEAN:-333}"
+MARTEN_FRAGMENT_SD="${MARTEN_FRAGMENT_SD:-80}"
+FOX_FRAGMENT_MEAN="${FOX_FRAGMENT_MEAN:-306}"
+FOX_FRAGMENT_SD="${FOX_FRAGMENT_SD:-73}"
+
 THREADS="${THREADS:-8}"
 REPLICATES="${REPLICATES:-30}"
 TOTAL_READS="${TOTAL_READS:-2000000}"
@@ -59,6 +71,21 @@ if [[ "${SMOKE:-0}" == "1" ]]; then
   TOTAL_READS=200000
   REPLICATES=3
   READ_COUNTS="1000,5000,20000"
+fi
+
+# The deepest level asked for should be a small part of the pool. Replicates
+# are drawn without replacement, so once a level takes an appreciable share of
+# the available reads they overlap heavily and their spread is narrowed by the
+# finite-population correction -- the estimate looks more precise than the
+# method is. Roughly 95 per cent of simulated reads map at MAPQ 30.
+MAX_COUNT=$(printf '%s' "$READ_COUNTS" | tr ',' '\n' | sort -n | tail -1)
+POOL_MAPPED=$(( TOTAL_READS * 95 / 100 ))
+if [[ "$MAX_COUNT" -gt $(( POOL_MAPPED / 5 )) ]]; then
+  echo "[warn] the deepest level, ${MAX_COUNT} mapped reads, is more than a" >&2
+  echo "       fifth of the ~${POOL_MAPPED} the pool is expected to yield." >&2
+  echo "       Raise TOTAL_READS (currently ${TOTAL_READS}) or drop the" >&2
+  echo "       deepest levels; otherwise replicates there share most of" >&2
+  echo "       their reads." >&2
 fi
 
 echo "== checking dependencies =="
@@ -103,6 +130,7 @@ cd "$WORKDIR"
 
 run_species () {
   local name="$1" gz="$2" chroms="$3" index="$4" profile="$5"
+  local frag_mean="$6" frag_sd="$7"
   local ref="${name}.fa"
 
   echo
@@ -175,6 +203,7 @@ run_species () {
     echo "   ART's built-in HiSeq 2500 model (max 150 bp); set ${name^^}_PROFILE"
     echo "   to a real FASTQ to match your own data and allow 151 bp"
   fi
+  echo "   fragment length ${frag_mean} +/- ${frag_sd} bp"
 
   echo
   echo "== calibrating $name =="
@@ -188,6 +217,8 @@ run_species () {
       --replicates "$REPLICATES" \
       --total-reads "$TOTAL_READS" \
       --read-length "$READ_LENGTH" \
+      --fragment-mean "$frag_mean" \
+      --fragment-sd "$frag_sd" \
       --min-mapq "$MIN_MAPQ" \
       --threads "$THREADS" \
       --skip-existing \
@@ -202,9 +233,11 @@ run_species () {
 for sp in $SPECIES; do
   case "$sp" in
     marten) run_species marten "$MARTEN_GZ" "$MARTEN_CHROMS" \
-                        "$MARTEN_INDEX" "$MARTEN_PROFILE" ;;
+                        "$MARTEN_INDEX" "$MARTEN_PROFILE" \
+                        "$MARTEN_FRAGMENT_MEAN" "$MARTEN_FRAGMENT_SD" ;;
     fox)    run_species fox    "$FOX_GZ"    "$FOX_CHROMS" \
-                        "$FOX_INDEX"    "$FOX_PROFILE" ;;
+                        "$FOX_INDEX"    "$FOX_PROFILE" \
+                        "$FOX_FRAGMENT_MEAN" "$FOX_FRAGMENT_SD" ;;
     *) echo "unknown species: $sp" >&2; exit 1 ;;
   esac
 done
@@ -255,8 +288,7 @@ How far to trust these numbers:
 
   Every replicate here is drawn from a single simulated genome, so the spread
   is the spread of read sampling alone. Variation between individuals is not
-  in it, and on thirty real dogs it was not small -- the female ratio ranged
-  from 0.86 to 1.01. A minimum read count from simulation is therefore a
-  floor, not a sufficient condition, and is not comparable with one obtained
-  from real samples of known sex.
+  in it. A minimum read count from simulation is therefore a floor, not a
+  sufficient condition, and is not comparable with one obtained from real
+  samples of known sex.
 EOF
