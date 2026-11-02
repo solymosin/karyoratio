@@ -15,13 +15,11 @@ and can put real samples of known sex through the identical procedure.
 
 | file | what it does |
 |---|---|
-| `karyoratio.py` | the estimator: ratio, confidence interval, assignment |
+| `karyoratio.py` | the estimator: ratio, interval, assignment |
 | `calibrate.py` | calibration by simulation, or validation on real samples |
 | `chromfile_from_report.py` | builds a chromosome file from an NCBI sequence report |
 | `pairs_to_reads.py` | measures the generated-pair to mapped-read factor |
 | `run_calibration.sh` | calibration wrapper for a local genome and index |
-| `run_dog_calibration.sh` | worked example: dog, from a prebuilt bowtie2 index |
-| `run_dog_controls.sh` | worked example: validation on real dogs of known sex |
 | `plot_calibration.R` | figures from the calibration output |
 | `*_chroms.tsv` | chromosome definitions for the stone marten and red fox |
 
@@ -108,9 +106,19 @@ One row per BAM:
 | `rho`, `rho_p` | Spearman correlation of sequence length against read count |
 | `assignment` | one of the three `--labels`, default `XY` / `n.a.` / `XX` |
 
-Under the defaults `ratio` is $R_x$ and `assignment` applies the thresholds of
-Mittnik et al. to the CI bounds: `XY` if the upper bound is below 0.60, `XX`
-if the lower bound is above 0.80, `n.a.` otherwise.
+Under the defaults `ratio` is $R_x$ and `assignment` applies the decision rule
+of Mittnik et al.: `XY` if `CI_u` is below 0.60, `XX` if `CI_l` is above 0.80,
+`n.a.` otherwise.
+
+`CI_l` and `CI_u` are $R_x \pm 1.96 \times SE$, with SE the standard error of
+the mean over the autosomes, as in the original method. Despite the name, this
+is not a calibrated 95 per cent confidence interval for a sample's $R_x$. Every
+per-autosome term shares the same X count, so the sampling noise of that count,
+which dominates at low depth, never enters the SE. In simulation the spread of
+$R_x$ between replicates was roughly 2.5 to 8 times the reported SE at depths up
+to 100,000 read pairs. The interval is best read as the input to a decision rule
+whose error rates are established by calibration (below), not as a statement of
+coverage.
 
 `rho` is a validity criterion, not part of the estimate. Read counts should
 scale with sequence length; a low value means the mapping is too sparse or too
@@ -147,7 +155,7 @@ coverage depends on the very thing the method is trying to determine.
 ## Depth, and when not to trust an assignment
 
 The 0.60/0.80 rule separates the sexes cleanly once coverage is adequate. Below
-that, the male and female distributions overlap, and a confidence interval can
+that, the male and female distributions overlap, and the interval can
 clear a threshold on a sample that carries far too few reads to support any
 assignment. Applying the rule on its own will then return a confident-looking
 call that the data do not justify.
@@ -158,21 +166,15 @@ Two guards are available, both inactive by default:
 ./karyoratio.py --bam sample.bam --chrom-file chroms.tsv --min-reads 7500
 ```
 
-**`--min-reads` is the one to set.** Nearly every incorrect assignment we have
-observed, in simulation and on real samples alike, came from a sample with too
-few reads rather than from an unusual distribution of them. On thirty real dogs
-of known sex, a cut at 2,500 mapped reads removed every incorrect assignment
-while keeping 7,446 of 9,184 correct ones.
+**`--min-reads` is the one to set.** Every incorrect assignment we have
+observed in simulation came from a sample with too few reads rather than from
+an unusual distribution of them.
 
 `--min-rho` returns the ambiguous label below a given length-count correlation.
 It is a diagnostic rather than a primary filter: it catches a sample that has
 ample reads distributed oddly across the chromosomes -- uneven coverage, or a
 mis-specified chromosome file -- but it is an expensive way to guard against
-low depth. On the same thirty dogs the cut needed to remove every incorrect
-assignment (0.90) discarded a further thousand correct ones compared with
-`--min-reads`, and combining the two was worse than either alone. Note also
-that it behaves asymmetrically between the sexes, since males give lower
-correlations at the same depth.
+low depth.
 
 There is no universal default for either, because the usable minimum depends on
 the species. Establish it by calibration and set it explicitly.
@@ -237,25 +239,12 @@ between individuals is part of what the validation is meant to reveal.
 
 ### What the calibration found
 
-Three species, 200 replicates per level, depth in mapped reads:
+Two species, 200 replicates per level, depth in mapped reads:
 
 | | <10% | <5% | <1% |
 |---|---|---|---|
 | stone marten, simulated | 4,000--5,000 | 7,500 | 15,000 |
 | red fox, simulated | 4,000--5,000 | 7,500 | 10,000--15,000 |
-| dog, simulated | 4,000--5,000 | 5,000--10,000 | 15,000 |
-| **dog, 30 real individuals** | **7,500** | **10,000--25,000** | **25,000** |
-
-The three simulations agree closely despite karyotypes of 16, 18 and 38
-autosomes, which suggests the thresholds carry across mammals reasonably well.
-
-Real samples needed roughly twice the depth. The reason is visible in the
-individual ratios: across thirty dogs the female $R_x$ ranged from 0.858 to
-1.008, so the least favourable individual sat only 0.06 above the 0.80
-threshold while the simulation, drawing every replicate from one genome, put it
-at 0.93. **A minimum depth from simulation is therefore a floor, not a
-sufficient condition.** Where real samples of known sex can be obtained, they
-are worth the trouble.
 
 ### Converting between generated pairs and mapped reads
 
@@ -318,7 +307,7 @@ Two existing tools address the same question for human data:
 Both are human-specific and depend on a Y chromosome. `karyoratio` differs in
 being species-agnostic, in requiring no Y chromosome -- which many non-model
 reference genomes lack, including the red fox -- in normalising against the
-full autosome set rather than a single chromosome, in reporting a confidence
+full autosome set rather than a single chromosome, in reporting an
 interval and a validity criterion rather than a point estimate, and in shipping
 the means to calibrate itself for a species it has not seen.
 
