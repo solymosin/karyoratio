@@ -338,5 +338,8 @@ PLoS ONE 11(10): e0163019.
 ```
 
 ```
-Vujić V, Mayer C, Helyes G, Maróti-Agóts Á, Maróti G, Csabai I, Solymosi N (2026) Sexing carnivores from faecal metagenomes: calibrating Rx for stone marten and red fox. bioRxiv 2026.11.04.764345. https://www.biorxiv.org/content/10.64898/2026.11.04.764345v1
+Vujić V, Mayer C, Helyes G, Maróti-Agóts Á, Maróti G, Csabai I, Solymosi N (2026)
+Sexing carnivores from faecal metagenomes: calibrating Rx for stone marten and
+red fox.
+bioRxiv 2026.11.04.764345. https://www.biorxiv.org/content/10.64898/2026.11.04.764345v1
 ```
