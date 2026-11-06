@@ -11,6 +11,12 @@ to $R_x$ alone, and the script says so when you depart from it.
 A companion script calibrates the thresholds for a new species by simulation,
 and can put real samples of known sex through the identical procedure.
 
+The method, the calibration and a worked application to stone marten and red
+fox faecal metagenomes are described in the accompanying preprint:
+[Sexing carnivores from faecal metagenomes: calibrating $R_x$ for stone marten
+and red fox](https://www.biorxiv.org/content/10.64898/2026.11.04.764345v1)
+(bioRxiv, 2026).
+
 ## Contents
 
 | file | what it does |
@@ -20,6 +26,7 @@ and can put real samples of known sex through the identical procedure.
 | `chromfile_from_report.py` | builds a chromosome file from an NCBI sequence report |
 | `pairs_to_reads.py` | measures the generated-pair to mapped-read factor |
 | `run_calibration.sh` | calibration wrapper for a local genome and index |
+| `run_marten_fox_calibration.sh` | the calibration run reported in the preprint |
 | `*_chroms.tsv` | chromosome definitions for the stone marten and red fox |
 
 ## Installation
@@ -321,10 +328,15 @@ the means to calibrate itself for a species it has not seen.
 
 ## Citation
 
-If you use this software, please cite Mittnik et al. (2016) for the method.
+If you use this software, please cite Mittnik et al. (2016) for the method and
+the preprint below for the implementation and its calibration.
 
 ```
 Mittnik A, Wang C-C, Svoboda J, Krause J (2016) A molecular approach to the
 sexing of the triple burial at the Upper Paleolithic site of Dolní Věstonice.
 PLoS ONE 11(10): e0163019.
+```
+
+```
+Vujić V, Mayer C, Helyes G, Maróti-Agóts Á, Maróti G, Csabai I, Solymosi N (2026) Sexing carnivores from faecal metagenomes: calibrating Rx for stone marten and red fox. bioRxiv 2026.11.04.764345. https://www.biorxiv.org/content/10.64898/2026.11.04.764345v1
 ```
